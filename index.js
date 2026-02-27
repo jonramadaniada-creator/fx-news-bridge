@@ -1,91 +1,68 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Data Only</title>
-</head>
-<body>
+const express = require('express');
+const xml2js = require('xml2js');
+const cors = require('cors');
 
-    <div id="countdown-label">Next High Impact: Loading...</div>
-    <div id="timer-display">00:00:00</div>
+const app = express();
+app.use(cors());
 
-    <hr>
+// --- STEALTH CACHE SETTINGS ---
+let cachedData = null;
+let lastFetchTime = 0;
+// Increased to 1 hour to avoid being "annoying" to Forex Factory
+const CACHE_DURATION = 60 * 60 * 1000; 
 
-    <table border="1" id="newsTable">
-        <thead>
-            <tr>
-                <th>Date</th>
-                <th>Time</th>
-                <th>Currency</th>
-                <th>Event</th>
-                <th>Impact</th>
-            </tr>
-        </thead>
-        <tbody></tbody>
-    </table>
+app.get('/news', async (req, res) => {
+    const currentTime = Date.now();
 
-    <script>
-        async function getNews() {
-            try {
-                const response = await fetch('https://news-7bvm.onrender.com/news');
-                const data = await response.json();
-                
-                const tableBody = document.querySelector('#newsTable tbody');
-                let highImpactEvents = [];
+    // 1. Serve from memory if we have data and it's fresh
+    if (cachedData && (currentTime - lastFetchTime < CACHE_DURATION)) {
+        console.log("Serving from internal cache...");
+        return res.json(cachedData);
+    }
 
-                // 1. Fill the table with raw data
-                data.forEach(event => {
-                    const row = `<tr>
-                        <td>${event.date}</td>
-                        <td>${event.time}</td>
-                        <td>${event.country}</td>
-                        <td>${event.title}</td>
-                        <td>${event.impact}</td>
-                    </tr>`;
-                    tableBody.innerHTML += row;
-
-                    // 2. Filter for future High Impact news
-                    if (event.impact && event.impact.toLowerCase() === 'high') {
-                        const eventTime = new Date(`${event.date} ${event.time} EST`);
-                        if (eventTime > new Date()) {
-                            highImpactEvents.push({ title: event.title, time: eventTime });
-                        }
-                    }
-                });
-
-                // 3. Start timer if high impact news exists
-                if (highImpactEvents.length > 0) {
-                    runTimer(highImpactEvents[0]);
-                }
-
-            } catch (err) {
-                console.error("Data Fetch Error:", err);
-                document.getElementById('countdown-label').innerText = "Server waking up...";
+    try {
+        console.log("Fetching fresh data from Forex Factory...");
+        const url = 'https://nfs.faireconomy.media/ff_calendar_thisweek.xml';
+        
+        const response = await fetch(url, {
+            headers: { 
+                // This makes the request look like a real person on a Mac
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+                'Accept-Language': 'en-US,en;q=0.9'
             }
+        });
+
+        // 2. Handle Rate Limiting (The 429 Error)
+        if (response.status === 429) {
+            console.log("Rate limited (429). Using old data if available.");
+            if (cachedData) return res.json(cachedData);
+            throw new Error("Forex Factory is temporarily blocking requests. Please wait 15 minutes.");
         }
 
-        function runTimer(event) {
-            const timerDisplay = document.getElementById('timer-display');
-            const label = document.getElementById('countdown-label');
-            
-            label.innerText = `Next High Impact: ${event.title}`;
+        if (!response.ok) throw new Error(`External Error: ${response.status}`);
 
-            setInterval(() => {
-                const now = new Date().getTime();
-                const distance = event.time - now;
+        const xmlData = await response.text();
+        const parser = new xml2js.Parser({ explicitArray: false });
+        const result = await parser.parseStringPromise(xmlData);
 
-                const h = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-                const m = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
-                const s = Math.floor((distance % (1000 * 60)) / 1000);
+        // 3. Save to cache
+        cachedData = result.weeklyevents.event;
+        lastFetchTime = currentTime;
 
-                timerDisplay.innerText = `${h}h ${m}m ${s}s`;
+        res.json(cachedData);
 
-                if (distance < 0) {
-                    timerDisplay.innerText = "LIVE";
-                }
-            }, 1000);
+    } catch (error) {
+        console.error("System Error:", error.message);
+        
+        // 4. Ultimate Safety: Never show an error if we have ANY old data
+        if (cachedData) {
+            return res.json(cachedData);
         }
 
-        getNews();
-    </script>
-</body>
-</html>
+        res.status(500).json({ error: "Feed Unavailable", details: error.message });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Stealth Bridge active on port ${PORT}`));
