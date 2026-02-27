@@ -1,56 +1,91 @@
-const express = require('express');
-const xml2js = require('xml2js');
-const cors = require('cors');
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Data Only</title>
+</head>
+<body>
 
-const app = express();
-app.use(cors());
+    <div id="countdown-label">Next High Impact: Loading...</div>
+    <div id="timer-display">00:00:00</div>
 
-// --- CACHE VARIABLES ---
-let cachedData = null;
-let lastFetchTime = 0;
-const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes in milliseconds
+    <hr>
 
-app.get('/news', async (req, res) => {
-    const currentTime = Date.now();
+    <table border="1" id="newsTable">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Time</th>
+                <th>Currency</th>
+                <th>Event</th>
+                <th>Impact</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
 
-    // Check if we have data AND if it's less than 30 minutes old
-    if (cachedData && (currentTime - lastFetchTime < CACHE_DURATION)) {
-        console.log("Serving from Cache (No request sent to Forex Factory)");
-        return res.json(cachedData);
-    }
+    <script>
+        async function getNews() {
+            try {
+                const response = await fetch('https://news-7bvm.onrender.com/news');
+                const data = await response.json();
+                
+                const tableBody = document.querySelector('#newsTable tbody');
+                let highImpactEvents = [];
 
-    try {
-        console.log("Cache expired or empty. Fetching fresh data from Forex Factory...");
+                // 1. Fill the table with raw data
+                data.forEach(event => {
+                    const row = `<tr>
+                        <td>${event.date}</td>
+                        <td>${event.time}</td>
+                        <td>${event.country}</td>
+                        <td>${event.title}</td>
+                        <td>${event.impact}</td>
+                    </tr>`;
+                    tableBody.innerHTML += row;
 
-        const url = 'https://nfs.faireconomy.media/ff_calendar_thisweek.xml';
-        const response = await fetch(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
-        });
+                    // 2. Filter for future High Impact news
+                    if (event.impact && event.impact.toLowerCase() === 'high') {
+                        const eventTime = new Date(`${event.date} ${event.time} EST`);
+                        if (eventTime > new Date()) {
+                            highImpactEvents.push({ title: event.title, time: eventTime });
+                        }
+                    }
+                });
 
-        if (!response.ok) throw new Error(`Blocked: ${response.status}`);
+                // 3. Start timer if high impact news exists
+                if (highImpactEvents.length > 0) {
+                    runTimer(highImpactEvents[0]);
+                }
 
-        const xmlData = await response.text();
-        const parser = new xml2js.Parser({ explicitArray: false });
-        const result = await parser.parseStringPromise(xmlData);
-
-        // Save the results to our cache
-        cachedData = result.weeklyevents.event;
-        lastFetchTime = currentTime;
-
-        res.json(cachedData);
-
-    } catch (error) {
-        console.error("Error:", error.message);
-        
-        // If the fetch fails but we have OLD data, show the old data instead of an error
-        if (cachedData) {
-            console.log("Fetch failed, serving stale cache as backup.");
-            return res.json(cachedData);
+            } catch (err) {
+                console.error("Data Fetch Error:", err);
+                document.getElementById('countdown-label').innerText = "Server waking up...";
+            }
         }
 
-        res.status(500).json({ error: "Data feed unavailable", details: error.message });
-    }
-});
+        function runTimer(event) {
+            const timerDisplay = document.getElementById('timer-display');
+            const label = document.getElementById('countdown-label');
+            
+            label.innerText = `Next High Impact: ${event.title}`;
 
-const PORT = 3000;
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}/news`));
+            setInterval(() => {
+                const now = new Date().getTime();
+                const distance = event.time - now;
+
+                const h = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                const m = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+                const s = Math.floor((distance % (1000 * 60)) / 1000);
+
+                timerDisplay.innerText = `${h}h ${m}m ${s}s`;
+
+                if (distance < 0) {
+                    timerDisplay.innerText = "LIVE";
+                }
+            }, 1000);
+        }
+
+        getNews();
+    </script>
+</body>
+</html>
